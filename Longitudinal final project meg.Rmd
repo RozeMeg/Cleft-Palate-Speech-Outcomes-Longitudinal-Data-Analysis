@@ -1,0 +1,284 @@
+---
+title: "Longitudinal Final Project"
+author: "Meg Rosales"
+date: "4/19/2020"
+output: word_document
+params:
+  t: !r Sys.time()
+---
+```{r}
+#print current date and time
+params$t
+
+#working directory
+setwd("C:/Users/meg/Desktop/Courses/Spring 2020 Courses/Longitudinal Data Analysis")
+
+#packages
+library(readxl)
+library(dplyr)
+library(tidyr)
+library(lme4)
+library(ggplot2)
+library(lmerTest)
+library(lattice)
+library(naniar)
+
+```
+
+**Data Cleaning**
+I saved the cleaning code so you could see my process, but I generated the data files from this and then saved them so I wouldn't have to rerun this every time since the cleaning required some manual entry.
+```{r echo = F}
+
+# #don't need to run this because the files are saved at the end of this chunk and I just load them
+# #read in the data
+# phon <- read_excel("KS SPSS data copy.xlsx use for combofinal.xlsx")
+# 
+# #rename variables - add 9 to tccount9 and tcorplos9 and 39 to concount39 and tccount39
+# names(phon) <- edit(names(phon))
+# 
+# #variables for analysis
+# #concount: number of consonants in child's consonant inventory
+# #tccount: number of true consonants in child's consonant inventory
+# #tcorplos: percentage of correct stop consonants produced
+# selnames <- c("subject","cleftype","concount9","tccount9","tcorplos9","concount13","tccount13","tcorplos13",
+#  "concount17","tccount17","tcorplos17","concount21","tccount21","tcorplos21","concount27","tccount27", 
+# "tcorplos27","concount33","tccount33","tcorplos33","concount39","tccount39","tcorplos39")
+# 
+# #narrow down to variables for analysis
+# cons <- phon%>%
+#   select(selnames)
+# 
+# #recode cleftype to binary cleft variable: 1 = cleft lip/palate, 0 = no cleft
+# #5 = no cleft, 1-4 = cleft
+# cons$cleft <- ifelse(cons$cleftype==5, 0, 1)
+# 
+# #need data for three different models
+# #consonant inventory data
+# cinv <- cons%>%
+#   select(c("subject", "cleft", "concount9", "concount13", "concount17", "concount21", "concount27", "concount33",
+#            "concount39"))
+# 
+# #true consonant inventory data
+# tc <- cons%>%
+#   select(c("subject", "cleft", "tccount9", "tccount13", "tccount17", "tccount21", "tccount27", "tccount33",
+#            "tccount39"))
+# 
+# #total correct plosives data
+# #only look at from 17 to 39 months because babies don't make enough consonants/correct consonants to analyze
+# #this until about 17 months
+# tcp <- cons%>%
+#   select(c("subject", "cleft","tcorplos17","tcorplos21","tcorplos27","tcorplos33", "tcorplos39"))
+# 
+# #drop anyone missing a cleft status
+# #dataset had data mostly complete for one site as some of the data was from a different site
+# #in the interest of time, I only used the cases from the completed site
+# cinv <- cinv%>% drop_na(cleft)
+# tc <- tc%>% drop_na(cleft)
+# tcp <- tcp%>% drop_na(cleft)
+# 
+# #Particip 100 has no data, drop them
+# cinv <- cinv%>% filter(subject != 100)
+# tc <- tc%>% filter(subject != 100)
+# tcp <- tcp%>% filter(subject != 100)
+# 
+# #the rest of the data seems to be missing completely at random <- no relationship to group
+# 
+# #save the datasets so we don't have to clean them again
+# cinv <- save(cinv, file = "cinv.Rdata")
+# tc <- save(tc, file = "tc.Rdata")
+# tcp <- save(tcp, file = "tcp.Rdata")
+```
+
+**Data Analysis**
+
+1) Consonant inventory analysis: Does size of overall consonant inventory at each age differ between children with a cleft and their non-cleft peers? Is there a difference in trends over time for size of overall consonant inventory between children with a cleft and their non-cleft peers?
+
+***Approach:*** Linear mixed effects model
+          ****Outcome:****  concount = (continuous) Size of child's consonant inventory
+          ****Fixed effect:**** cleft = (binary) Whether child has a cleft (1) or not (0)
+          ****Random effect:**** subject
+          
+```{r}
+#read in the data
+load("cinv.Rdata")
+
+#plot of means over time
+
+#get the mean counts by group into a dataframe
+cinv_m <- cinv%>%
+  group_by(cleft)%>%
+  summarise(mean9 = round(mean(concount9, na.rm = T)),
+            mean13 = round(mean(concount13, na.rm = T)),
+            mean17 = round(mean(concount17, na.rm = T)),
+            mean21 = round(mean(concount21, na.rm = T)),
+            mean27 = round(mean(concount27, na.rm = T)),
+            mean33 = round(mean(concount33, na.rm = T)),
+            mean39 = round(mean(concount39, na.rm = T)))
+
+means_cinv <- reshape(as.data.frame(cinv_m),
+                 varying = c("mean9", "mean13", "mean17", "mean21", "mean27", "mean33","mean39"),
+                 v.names = "mean",
+                 timevar = "months",
+                 times = c(9, 13, 17, 21, 27, 33, 39),
+                 direction = "long")%>%
+  mutate(cleft = as.factor(cleft))
+
+
+#create time plot with mean lead level vs. time
+ggplot(data = means_cinv, aes(x = months, y = mean, group = cleft, color = cleft))+
+  geom_line()+
+  xlab("Age in months")+
+  ylab("Mean size of consonant inventory")+
+  geom_point(shape = 1, size = 4)
+```
+
+```{r}
+#restructure data for mixed effects model
+
+#change from tibble to dataframe because otherwise reshape complains
+cinv <- as.data.frame(cinv)
+
+#mixed effects model restructuring
+cinv_me <- reshape(cinv,
+                   varying = c("concount9", "concount13", "concount17", "concount21", "concount27", "concount33","concount39"),
+                   v.names = "concount",
+                   timevar = "months",
+                   times = c(9, 13, 17, 21, 27, 33, 39),
+                   direction = "long")%>%
+  #get rid of superfluous id variable this generates
+  select(-c(id))%>%
+  #convert months to a factor variable - only 6 time points
+  mutate(months = as.factor(months))
+
+#linear mixed effects model
+cinv_model_lm <- lmer(concount ~ cleft*months + (1 | subject), 
+             data = cinv_me)
+summary(cinv_model_lm)
+```
+
+2) True consonant inventory analysis: Does the size of the true consonant inventory at each age differ between children with a cleft and their non-cleft peers? Is there a difference in trends over time for the size of the true consonant inventory between children with a cleft and their non-cleft peers?
+
+****Approach:**** Linear mixed effects model
+          ****Outcome:****  tccount = (continuous) Number of true consonants in child's consonant inventory 
+          ****Fixed effect:**** cleft = (binary) whether child has a cleft (1) or not (0)
+          ****Random effect:**** subject
+          
+```{r}
+#read in the data
+load("tc.Rdata")
+#get the mean counts by group into a dataframe
+tc_m <- tc%>%
+  group_by(cleft)%>%
+  summarise(mean9 = round(mean(tccount9, na.rm = T)),
+            mean13 = round(mean(tccount13, na.rm = T)),
+            mean17 = round(mean(tccount17, na.rm = T)),
+            mean21 = round(mean(tccount21, na.rm = T)),
+            mean27 = round(mean(tccount27, na.rm = T)),
+            mean33 = round(mean(tccount33, na.rm = T)),
+            mean39 = round(mean(tccount39, na.rm = T)))
+
+means_tc <- reshape(as.data.frame(tc_m),
+                 varying = c("mean9", "mean13", "mean17", "mean21", "mean27", "mean33","mean39"),
+                 v.names = "mean",
+                 timevar = "months",
+                 times = c(9, 13, 17, 21, 27, 33, 39),
+                 direction = "long")%>%
+  mutate(cleft = as.factor(cleft))
+
+
+#create time plot with mean lead level vs. time
+ggplot(data = means_tc, aes(x = months, y = mean, group = cleft, color = cleft))+
+  geom_line()+
+  xlab("Age in months")+
+  ylab("Mean size of true consonant inventory")+
+  geom_point(shape = 1, size = 4)
+
+```
+```{r}
+#restructure data for mixed effects model
+
+#change from tibble to dataframe because otherwise reshape complains
+tc <- as.data.frame(tc)
+
+#mixed effects model restructuring
+tc_me <- reshape(tc,
+                   varying = c("tccount9", "tccount13", "tccount17", "tccount21", "tccount27", "tccount33","tccount39"),
+                   v.names = "tccount",
+                   timevar = "months",
+                   times = c(9, 13, 17, 21, 27, 33, 39),
+                   direction = "long")%>%
+  #get rid of superfluous id variable this generates
+  select(-c(id))%>%
+  #convert months to a factor variable - only 6 time points
+  mutate(months = as.factor(months))
+
+#linear mixed effects model
+tc_model_lm <- lmer(tccount ~ cleft*months + (1 | subject), 
+             data = tc_me)
+summary(tc_model_lm)
+```
+
+3) Percent total correct plosives analysis: Does percentage correct of stop consonants produced at each age differ between children with a cleft and their non-cleft peers? Is there a difference in trends over time for percentage correct of stop consonants produced between children with a cleft and their non-cleft peers?
+
+**Approach:** Linear mixed effects model
+          **Outcome:**  concount = (continuous) Number of consonants in child's consonant inventory at age
+          **Fixed effect:** cleft = (binary) whether child has a cleft (1) or not (0)
+          **Random effect:** subject (want to make inference generalizable outside this population, interpret at                                the subject level)
+          
+```{r}
+#read in the data
+load("tcp.Rdata")
+
+#need to recode percentages of 101 to NA (a convention they had when entering the data)
+tcp <- tcp%>%replace_with_na_all(condition = ~.x == 101.00)
+
+#get the mean counts by group into a dataframe
+tcp_m <- tcp%>%
+  group_by(cleft)%>%
+  summarise(mean17 = mean(tcorplos17, na.rm = T),
+            mean21 = mean(tcorplos21, na.rm = T),
+            mean27 = mean(tcorplos27, na.rm = T),
+            mean33 = mean(tcorplos33, na.rm = T),
+            mean39 = mean(tcorplos39, na.rm = T))
+
+means_tcp <- reshape(as.data.frame(tcp_m),
+                 varying = c("mean17", "mean21", "mean27", "mean33","mean39"),
+                 v.names = "mean",
+                 timevar = "months",
+                 times = c(17, 21, 27, 33, 39),
+                 direction = "long")%>%
+  mutate(cleft = as.factor(cleft))
+
+
+#create time plot with mean lead level vs. time
+ggplot(data = means_tcp, aes(x = months, y = mean, group = cleft, color = cleft))+
+  geom_line()+
+  xlab("Age in months")+
+  ylab("Mean percent correct stop consonants produced")+
+  geom_point(shape = 1, size = 4)
+
+```
+
+```{r}
+#restructure data for mixed effects model
+
+#change from tibble to dataframe because otherwise reshape complains
+tcp <- as.data.frame(tcp)
+
+#mixed effects model restructuring
+tcp_me <- reshape(tcp,
+                   varying = c("tcorplos17", "tcorplos21", "tcorplos27", "tcorplos33","tcorplos39"),
+                   v.names = "tcorplos",
+                   timevar = "months",
+                   times = c(17, 21, 27, 33, 39),
+                   direction = "long")%>%
+  #get rid of superfluous id variable this generates
+  select(-c(id))%>%
+  #convert months to a factor variable - only 6 time points
+  mutate(months = as.factor(months))
+
+#linear mixed effects model
+tcp_model_lm <- lmer(tcorplos ~ cleft*months + (1 | subject), 
+             data = tcp_me)
+summary(tcp_model_lm)
+```
